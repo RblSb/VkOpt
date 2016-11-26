@@ -11,7 +11,7 @@
 //
 /* VERSION INFO */
 var vVersion	= 301;
-var vBuild = 161021;
+var vBuild = 161025;
 var vPostfix = '';
 
 if (!window.vkopt) window.vkopt={};
@@ -47,6 +47,8 @@ var vkopt_defaults = {
       show_full_user_info: false,
       switch_kbd_lay: true,
       show_online_status: false,
+      show_common_group: false,
+      common_group_color: '90ee90',
 
       //Extra:
       vkopt_guide: true,   // показываем, где находится кнопка настроек, до тех пор, пока в настройки всё же не зайдут
@@ -367,6 +369,9 @@ var vk_glue = {
 
          // Можем модифицировать поля запроса перед отсылкой ajax-запроса, либо заблокировать его
          Inj.Start('ajax.post','if (vk_glue.process_on_post(#ARG0#, #ARG1#, #ARG2#) === false) return;');//(url, query, options)
+
+         // цепляемся к возвращению обработанного шаблона из getTemplate
+         Inj.Replace('getTemplate', /return\s+([^;]+);/,'return vk_glue.tpl_hook($1, #ARG0#, #ARG1#)');
          /*
          Inj.Start('renderFlash','vkOnRenderFlashVars(vars);');
          */
@@ -431,6 +436,10 @@ var vk_glue = {
       // catch(e){
       //    vkopt_core.ping_stat({type: 'fail', source: 'response_handler', url: url, q: q ? q.act : ''})
       // }
+   },
+   tpl_hook: function(html, tpl_name, state){
+      // Сообщаем модулям, что нужно как элемент обработать содержимое возвращаемое функцией getTemplate
+      return vkopt_core.mod_str_as_node(html, vkopt_core.plugins.process_node, {source:"getTemplate", tpl_name: tpl_name, state: state})
    }
 };
 
@@ -508,6 +517,18 @@ vkopt.load_file = function(callback){
      vkAlertBox(IDL('LoadFile'), IDL('SelectFile')+'<input type="file" id="vk_load_file_input">', true);
      inp_el = ge('vk_load_file_input');
      inp_el.addEventListener('change', load_file, false);
+}
+
+vkopt.set_css = function(code, id){
+   var st = ge(id);
+   if (!id || !st) {
+   	st = document.createElement("style");
+   	st.type = "text/css";
+   	st.setAttribute('id', id);
+   	st.appendChild(document.createTextNode(code));
+   	document.getElementsByTagName("head")[0].appendChild(st);
+   } else
+   	val(id, code);
 }
 
 vkopt['res'] = {
@@ -628,6 +649,10 @@ vkopt['settings'] =  {
          .vk_welcome_warn{
             font-weight:bold;
             color:#F00;
+         }
+         #vkopt_export_settings{
+            text-align: center;
+            padding: 10px 0px;
          }
          .box_body #vkopt_donate_block{
             margin-left: 50px;
@@ -762,8 +787,7 @@ vkopt['settings'] =  {
                   <!--CODE--!>
                 </div>
              </div>
-             <div id="vkopt_lang_settings"></div>
-             <div id="vkopt_donate_block"></div>
+             {vals.bottom_block}
          </div>
          */
          /*search_block:
@@ -773,8 +797,15 @@ vkopt['settings'] =  {
            </div>
          </div>
          <div class="vk_setts_wrap" id="vkopt_settings">{vals.content}</div>
-         <div id="vkopt_lang_settings"></div>
-         <div id="vkopt_donate_block"></div>
+         {vals.bottom_block}
+         */
+         /*bottom_block:
+             <div id="vkopt_export_settings">
+               <button class="flat_button" onclick="vkopt.settings.export_cfg();">{lng.ExportSettings}</button>
+               <button class="flat_button" onclick="vkopt.settings.import_cfg();">{lng.ImportSettings}</button>
+             </div>
+             <div id="vkopt_lang_settings"></div>
+             <div id="vkopt_donate_block"></div>
          */
          /*donate_form:
          <div>{lng.Donations}</div>
@@ -1090,17 +1121,19 @@ vkopt['settings'] =  {
          val('vk_purses_list', vkOptDonate.WMPursesList('wmdonate'));
          val('wmdonate', vkOptDonate.WMDonateForm(30,'R255120081922'));
       };
+      var bottom_block = vk_lib.tpl_process(vkopt.settings.tpls['bottom_block'], {});
+
       if (!in_box || ge('vkopt_settings_block')){ // показ на странице, а не во всплывающем окне
          stManager.add(['dev.css']);
          el = el || ge('ui_rmenu_vkopt');
          el && uiRightMenu.switchMenu(el);
          var p = ge('wide_column');
          vkopt_core.setLoc('settings?act=vkopt'); // вместо nav.setLoc для избежания рекурсии, обход реакции на смену URL'а
-         p.innerHTML = vkopt.settings.tpls['main'];
+         p.innerHTML = vk_lib.tpl_process(vkopt.settings.tpls['main'],{bottom_block: bottom_block});
          update_view();
       } else {
          stManager.add(['settings.css','dev.css'],function(){
-            var html = vk_lib.tpl_process(vkopt.settings.tpls['search_block'], {content: ''});
+            var html = vk_lib.tpl_process(vkopt.settings.tpls['search_block'], {content: '', bottom_block: bottom_block});
             vkopt.settings.__box = new MessageBox({title:vkopt.settings.__full_title, width: 650 ,hideButtons:true, bodyStyle: 'padding:0px;'}).content(html).show();
             update_view();
          })
@@ -1308,6 +1341,22 @@ vkopt['settings'] =  {
       vk_ext_api.storage.set('vkopt_cfg_backup_'+vk.id, '{}', function(){
          console.log('empty config copied to bg ok');
          callback && callback();
+      });
+   },
+   export_cfg: function() {
+      var data = JSON.stringify(vkopt.settings.config(), '', '   ');
+      vkopt.save_file(data, 'vkopt_config.json');
+   },
+   import_cfg: function() {
+      vkopt.load_file(function(data) {
+         try{
+            var newset = JSON.parse(data);
+            vkopt.settings.config(newset);
+            vkopt.settings.config_cached = null;
+            alert(IDL('ConfigLoaded'));
+         } catch(e) {
+            alert(IDL('ConfigError'));
+         }
       });
    }
 };
@@ -3724,7 +3773,28 @@ vkopt['videoview'] = {
       // запихиваем свой обработчик в момент получения данных о видео.
       if (url == '/al_video.php' && q.act == 'show'){
          var rx = /(var\s*isInline)/;
-         if (answer[2] && rx.test(answer[2])){
+         if (answer[5] && answer[5].player){// новый формат ответа, JSON с данными о плеере находится в 6-ом аргументе.
+            var vars = null;
+            var params_arr = answer[5].player.params;
+            if (params_arr){
+               vars = params_arr[0]; // засовываем данные о первом попавшемся видео
+               var full_vid = function(vars){
+                  return vars.oid+'_'+vars.vid
+               };
+               if (params_arr.length > 1 && full_vid(vars) != q.video){
+                  vkopt.log('wrong video data. search other...');
+                  for (var i = 0; i < params_arr.length; i++){ // да, тут лишняя итерация
+                     if (full_vid(params_arr[i]) == q.video){ // нашли данные о нужном видео
+                        vars = params_arr[i];
+                        break;
+                     }
+                  }
+               }
+
+            }
+            vkopt.videoview.on_player_data(vars);
+         }
+         else if (answer[2] && rx.test(answer[2])){ // старый формат ответа, vars находится в третьем аргументе.
             //vkopt.log('video data:', answer[2]);
             answer[2] = answer[2].replace(rx, '\n   vkopt.videoview.on_player_data(vars);\n $1');
          } else
@@ -4112,6 +4182,24 @@ vkopt['messages'] = {
          .vk_save_hist_cfg textarea{
             width:370px;
          }
+         .vk_audio_msg_btns{
+            padding: 0px 10px;
+         }
+         .vk_au_msg_dl{
+            font-size: 10px;
+            padding-right: 10px;
+         }
+         .vk_au_msg_dl div{
+            background-image: url(/images/blog/about_icons.png);
+            background-repeat: no-repeat;
+            width: 12px;
+            height: 14px;
+            background-position: 0px -309px;
+            padding-right: 5px;
+            display: inline-block;
+            margin-top: -5px;
+            margin-bottom: -5px;
+         }
          */
       }).css + vkopt.messages.css_msg_bg(vkopt.settings.get('old_unread_msg_bg'))
    },
@@ -4239,6 +4327,12 @@ vkopt['messages'] = {
          /*acts_export_history_item:
          <a tabindex="0" role="link" class="ui_actions_menu_item _im_action im-action vk_acts_item_icon" onclick="return vkopt.messages.export_box()">{lng.SaveHistory}</a>
          */
+         /*audio_msg_btns:
+         <div class="vk_audio_msg_btns">
+           <a class="vk_au_msg_dl" href="{vals.url_mp3}"><div></div>mp3</a>
+           <a class="vk_au_msg_dl" href="{vals.url_ogg}"><div></div>ogg</a>
+         </div>
+         */
       });
    },
    onRequestQuery: function(url, query, options) {
@@ -4270,10 +4364,7 @@ vkopt['messages'] = {
          vkopt.messages._chbg_to = setTimeout(function(){
             var code = vkopt.messages.css_msg_bg(val);
             var st = ge('vk_unread_msg_preview');
-            if (!st)
-               vkaddcss(code, 'vk_unread_msg_preview');
-            else
-               val('vk_unread_msg_preview', code);
+            vkopt.set_css(code, 'vk_unread_msg_preview');
          },200)
       }
 
@@ -4285,6 +4376,26 @@ vkopt['messages'] = {
       vkopt_core.timeout(vkopt.messages.acts_menu, 500);
       if (vkopt.settings.get('im_hide_dialogs'))
          vkopt.messages.dialogs_hide_init();
+   },
+   processNode: function(node, params){
+      if (!vkopt.settings.get('audio_dl') || !node || (params && params.source == "getTemplate" && params.tpl_name!="im_msg_row")) return;
+      var amsg = geByClass('audio-msg-track', node);
+      for (var i = 0; i < amsg.length; i++){
+         var msg = amsg[i];
+         if (!msg || !msg.parentNode || geByClass1('vk_audio_msg_btns', msg.parentNode)) // чтоб повторно не добавить кнопки
+            continue;
+         // выдираем ссылки на аудио
+         var url_mp3 = attr(msg,'data-mp3'),
+             url_ogg = attr(msg,'data-ogg');
+         if (!url_mp3 && !url_ogg)
+            continue;
+         // создаём блок с кнопками по шаблону и добавляем после аудио-сообщения
+         var dl_block = se(vk_lib.tpl_process(vkopt.messages.tpls['audio_msg_btns'],{
+            url_mp3: url_mp3,
+            url_ogg: url_ogg
+         }));
+         msg.parentNode.appendChild(dl_block);
+      }
    },
    info_icon: function(){
       var p = geByClass1('_im_dialogs_settings');
@@ -4967,6 +5078,14 @@ vkopt['face'] =  {
             title:"seExplandProfileInfo",
             class_toggler: true
          }
+      },
+      Extra:{
+         anonimize_btn: {
+            class_toggler: true
+         },
+         anonimize: {
+            class_toggler: true
+         }
       }
    },
    css: function(){
@@ -5074,6 +5193,49 @@ vkopt['face'] =  {
          .vk_show_full_user_info .profile_more_info {
             display: none;
          }
+
+         .vk_anonimize .top_profile_img,
+         .vk_anonimize .people_cell_img,
+         .vk_anonimize .post_field_user_image,
+         .vk_anonimize .post_img,
+         .vk_anonimize .reply_image,
+         .vk_anonimize .like_tt_owner,
+         .vk_anonimize .friends_photo,
+         .vk_anonimize .ow_ava,
+         .vk_anonimize .apps_feed_user_photo,
+         .vk_anonimize .ts_contact_photo,
+         .vk_anonimize .chat_tab_imgcont,
+         .vk_anonimize .fc_contact_photo,
+         .vk_anonimize .fc_msgs_img,
+         .vk_anonimize .nim-peer--photo{
+            -webkit-filter: blur(10px);
+            filter: blur(6px);
+         }
+         .vk_anonimize .page_avatar_img{
+            -webkit-filter: blur(30px);
+            filter: blur(30px);
+         }
+         .vk_anonimize .top_profile_name,
+         .vk_anonimize .ts_contact_title,
+         .vk_anonimize .ts_contact_info,
+         .vk_anonimize .ts_contact_info,
+         .vk_anonimize .people_cell_name a,
+         .vk_anonimize .friends_field_title a,
+         .vk_anonimize .post_author .author,
+         .vk_anonimize #profile h2.page_name,
+         .vk_anonimize .reply_author .author,
+         .vk_anonimize .mem_link,
+         .vk_anonimize .audio_friend_name,
+         .vk_anonimize .apps_feed_info_str b a,
+         .vk_anonimize .wall_signed_by,
+         .vk_anonimize .fc_contact_name,
+         .vk_anonimize .im-mess-stack--lnk,
+         .vk_anonimize ._im_ui_peers_list .im-right-menu--text,
+         .vk_anonimize .im-page--peer{
+            -webkit-filter: blur(4px);
+            filter: blur(4px);
+         }
+
          */
       });
       var progress_bar = vk_lib.get_block_comments(vkProgressBar).css;
@@ -5103,6 +5265,7 @@ vkopt['face'] =  {
    },
    onInit: function() {
       vkopt.face.user_online_status();
+      vkopt.face.anon_top_menu_item();
    },
    onCmd: function(data){
       if (data.act == 'user_online_status')
@@ -5111,6 +5274,15 @@ vkopt['face'] =  {
    onOptionChanged: function(option_id, val, option_data){
       if (option_id == 'show_online_status')
          vkopt.face.user_online_status();
+   },
+   anon_top_menu_item: function(){
+      if (!vkopt.settings.get('anonimize_btn'))
+         return;
+      var ref = ge('top_support_link');
+      var item = se('<a class="top_profile_mrow" id="top_anonimize_link" href="#" onclick="return vkopt.settings.set(\'anonimize\', !vkopt.settings.get(\'anonimize\'));">Anonimize</a>');
+      if (ref && !ge('top_anonimize_link')){
+         ref.parentNode.insertBefore(item, ref);
+      }
    },
    user_online_status: function(status) {
       if (vkopt.face.check_online_timeout) clearTimeout(vkopt.face.check_online_timeout);
@@ -5174,11 +5346,35 @@ vkopt['profile'] = {
       Users: {
          calc_age:{
             title: 'seCalcAge'
+         },
+         show_common_group:{
+            title: 'seShowCommonGroup',
+            class_toggler: true,
+            sub: {
+               common_group_color:{
+                  title: ' ',
+                  color_picker: true
+               }
+            }
          }
       },
       Extra: {
          zodiak_ophiuchus:{}
       }
+   },
+
+   css: function() {
+      return vkopt.profile.css_common_group(vkopt.settings.get('common_group_color'));
+   },
+
+   css_common_group: function(color){
+      return vk_lib.get_block_comments(function(){
+         /*css:
+         .vk_show_common_group .vkopt_com_gr {
+            background: #{colorCommonGroup} !important;
+         }
+         */
+      }).css.replace(new RegExp("{colorCommonGroup}", 'g'), color);
    },
 
    onInit: function(){
@@ -5210,8 +5406,68 @@ vkopt['profile'] = {
             vkopt.profile.moveAudio(vkopt.settings.get('audio_pos'));
          },200);
       }
+      if (vk.id == cur.oid) // обновим кеш групп, если зашли на свою страницу
+         vkopt.profile.fshow_common_group(true);
+
+      if (vkopt.settings.get('show_common_group') && cur.module == 'profile' && vk.id != cur.oid)
+         vkopt.profile.fshow_common_group();
+   },
+   onLibFiles: function(fn){
+      if (fn == 'fansbox.js' && vkopt.settings.get('show_common_group')){
+         Inj.Replace('FansBox.genIdolRow', /return\s*([\s\S]+)/i, function(s,p1){ // вклиниваемся в рендеринг списка интересных страниц в боксе
+            return 'var tmp_html = '+p1+'; return vkopt_core.mod_str_as_node(tmp_html, vkopt.profile.highlight_groups, {source:"FansBox.genIdolRow"});';
+         })
+      }
+   },
+   groups_cache:{},
+   fshow_common_group: function(update) {
+      var store_key = 'user_groups_' + vk.id; // чтоб при входе на другой аккаунт не подсвечивались группы предыдущего.
+      var stored_list = localStorage[store_key];
+      if (!stored_list || update) {
+         dApi.call("groups.get",{ user_id: vk.id, extended: '1', filter: 'groups,publics,events', v: '5.59'},function(r) {
+            if (r.error) return;
+            var groups = r.response.items;
+            var cnt = groups.length;
+            var groups_sn = [];
+            for (var i = 0; i < groups.length; i++) groups_sn.push(groups[i].screen_name);
+            vkopt.profile.groups_cache[store_key] = groups_sn;
+            if (!update)
+               vkopt.profile.highlight_groups();
+            localStorage[store_key] = JSON.stringify(groups_sn);
+         });
+      } else {
+         try {
+            var groups_sn = JSON.parse(stored_list);
+            vkopt.profile.groups_cache[store_key] = groups_sn;
+            vkopt.profile.highlight_groups();
+         } catch(e){
+            localStorage[store_key] = '';
+            setTimeout(function(){
+               vkopt.profile.fshow_common_group();
+            },300)
+         }
+
+      }
+   },
+   link_rx: /^(https:\/\/[^\/]+\/|\/)([^\/\?#&]+)/i, // выдёргиваем из ссылки адрес модуля (screen_name)
+   highlight_groups: function(node) {
+      var groups_sn = vkopt.profile.groups_cache['user_groups_' + vk.id];
+      if (!groups_sn) return;
+      var rx = vkopt.profile.link_rx;
+      node = node || ge('page_info_wrap');
+      if (!node) return;
+      var nodes = geByTag('a', node);
+      for (var j=0;j<nodes.length;j++) {
+         if ((m = (nodes[j].href || '').match(rx)) && m && groups_sn.indexOf(m[2]) > -1){
+            addClass(nodes[j], "vkopt_com_gr");
+         }
+      }
    },
    processNode: function(node, params){
+         if (vkopt.settings.get('show_common_group') && params && params.url == '/al_fans.php' && params.q && params.q.oid != vk.id){
+            vkopt.profile.highlight_groups(node);
+         }
+
          if (!vkopt.settings.get('calc_age'))
              return;
          var nodes = geByClass('profile_info_row');
@@ -5702,6 +5958,15 @@ vkopt['wall'] = {
          datepicker_inj:{}
       }
    },
+   css: function(){
+      return vk_lib.get_block_comments(function(){
+         /*css:
+         .vk_poll_info_btn{
+            color: #939393;
+         }
+         */
+      }).css;
+   },
    onLibFiles: function(file_name){
 
       /* Задача - хотим менять дефолтный интервал между создаваемыми отложенными постами.
@@ -5711,6 +5976,17 @@ vkopt['wall'] = {
       Но если обновить страницу, на которой стена, то фикс не применится, т.к медиаселектор создаёт свой экземпляр раньше, чем вкопт изменит его код.
       Поэтому будем править время уже в самом datepicker'е
       */
+   },
+   tpls:{},
+   onInit: function(){
+      vkopt.wall.tpls = vk_lib.get_block_comments(function(){
+         /*cancel_btn:
+         <a class="vk_poll_info_btn fl_r" href="#" onclick="return vkopt.wall.poll_cancel_answer('{vals.owner_id}','{vals.poll_id}','{vals.post_id}');">{lng.CancelAnswer}</a>
+         */
+         /*results_btn:
+         <a class="vk_poll_info_btn fl_r" href="#" onclick="return vkopt.wall.poll_results('{vals.owner_id}','{vals.poll_id}','{vals.post_id}');">{lng.ViewResults}</a>
+         */
+      });
    },
    onDatepickerCreate: function(args){
       // args[0] - element_id
@@ -5764,6 +6040,222 @@ vkopt['wall'] = {
          //var hours = 3; // нужна опция выбора величины интервала между постами.
          return vkopt.wall.postponed.additional_interval;//hours * 60*60;
       }
+   },
+   processNode: function(node, params) {
+      var els=geByClass('page_media_poll',node);
+      for (var i=0; i<els.length; i++){
+         vkopt.wall.poll_btns(els[i]);
+      }
+
+      if (!els.length && params && params.q && params.url == '/widget_poll.php' && params.q.act == 'a_vote')
+         vkopt.wall.poll_btns(node);
+   },
+   poll_btns: function(p){
+      var el=geByClass('page_poll_options',p)[0];
+      var c=geByClass('page_poll_total',p)[0];//'page_poll_bottom'
+      if (!c || geByClass1('vk_poll_info_btn', c)) return;
+      if (!el){ //проголосовали, но хотим отменить голос
+         var m = val(p).match(/id="post_poll_raw(-?\d+)_(\d+)[^>]+value="(-?\d+)_(\d+)"/);
+         c.insertBefore(vkCe('span',{"class":"divider fl_r"},""),c.firstChild);
+         var cancel_btn = se(vk_lib.tpl_process(vkopt.wall.tpls['cancel_btn'],{
+            owner_id: m[3], // or m[1]
+            poll_id:  m[4],
+            post_id:  m[2]
+         }));
+         c.insertBefore(cancel_btn,c.firstChild);
+      } else { // не голосовали, но можем подсмотреть результаты
+         var m = val(p).match(/id="post_poll_id(-?\d+)_(\d+)+[^>]+value="(\d+)"/);
+         c.insertBefore(vkCe('span',{"class":"divider fl_r"},""), c.firstChild);
+         var res_btn =  se(vk_lib.tpl_process(vkopt.wall.tpls['results_btn'],{
+            owner_id: m[1],
+            poll_id:  m[3],
+            post_id:  m[2]
+         }));
+         c.insertBefore(res_btn, c.firstChild);
+      }
+   },
+   poll_cancel_answer: function (owner_id, poll_id, post_id){
+      var cancel = function(data){
+         if (data.answer_id==0){
+            alert(IDL('CancelAnswerError'));
+            return;
+         }
+         dApi.call('polls.deleteVote',{owner_id: data.owner_id, poll_id: data.id, answer_id: data.answer_id, v: '5.59'},function(r){
+            if (r.response==1) {
+               ajax.post('/al_wall.php',{
+                  act: 'post_tt',
+                  post: owner_id+'_'+post_id,
+                  self:1
+                  }, {
+                     onDone:function(data,js){
+                        var poll = geByClass1('page_media_poll_wrap',se(data));
+                        var pollOnPage = geByClass1('page_media_poll_wrap',ge('wpt'+owner_id+'_'+post_id));
+                        if (poll && pollOnPage)
+                           pollOnPage.innerHTML = poll.innerHTML;
+                        else
+                           vkMsg(IDL('CancelAnswerSuccess'));
+                     },
+                     onFail:function(msg){
+                        vkMsg(IDL('CancelAnswerSuccess'));
+                        return true;
+                     }
+                  }
+               );
+            }
+            else
+               alert(IDL('CancelAnswerFail'));
+         });
+      };
+
+      var code='\
+         var post=API.wall.getById({posts:"'+owner_id+'_'+post_id+'"})[0];\
+         var attachments=post.attachments;\
+         var i=0;\
+         var b=attachments[i];\
+         var pid = 0;\
+         var oid = 0;\
+         var oid2 = 0;\
+         while(i<attachments.length){\
+            if (b.type=="poll"){\
+               pid=b.poll.poll_id;\
+               oid=post.copy_owner_id;\
+               oid2=post.to_id;\
+            };\
+            i = i + 1;\
+            b=attachments[i]; \
+         }\
+         return {oid:oid,oid2:oid2,pid:pid,p:post,poll1:API.polls.getById({owner_id:oid,poll_id:pid}),poll2:API.polls.getById({owner_id:oid2,poll_id:pid})};\
+         ';
+
+      if (owner_id && poll_id){
+         dApi.call('polls.getById',{owner_id:owner_id, poll_id:poll_id, v: '5.59'},function(r){
+            var data = r.response;
+            cancel(data);
+         });
+      } else {
+         dApi.call('execute',{code:code, v: '5.59'},function(r){
+            var data = r.response;
+            if (vk_DEBUG) console.log(data);
+            cancel(data.poll1 || data.poll2);
+         });
+      }
+      return false;
+   },
+   poll_results: function(owner_id, poll_id, post_id){
+      var tpl_old='\
+          <tr>\
+            <td colspan="2" class="page_poll_text">%TEXT</td>\
+          </tr><tr onmouseover="Wall.pollOver(this, \'%FULL_POST_ID\', %ANSWER_ID)">\
+            <td class="page_poll_row">\
+            <div class="page_poll_percent" style="width: %WIDTH%"></div><div class="page_poll_row_count">%COUNT</div>\
+            </td><td class="page_poll_row_percent ta_r"><nobr><b>%RATE%</b></nobr></td>\
+          </tr>\
+          <tr><td colspan="2"><div id="vk_poll_usrs%ANSWER_ID" class="wk_poll_usrs"></div></td></tr>\
+      ';
+      var tpl='\
+      <div class="page_poll_stat" onmouseover="Wall.pollOver(this, \'%FULL_POST_ID\', %ANSWER_ID)">\
+         <div class="page_poll_text">%TEXT</div>\
+         <div class="page_poll_row_wrap">\
+            <div class="page_poll_row_percent">%RATE%</div>\
+            <div class="page_poll_row">\
+               <div class="page_poll_percent" style="width: %WIDTH%"></div>\
+               <div class="page_poll_row_count">%COUNT</div>\
+            </div>\
+         </div>\
+      </div>\
+      ';
+      var full_post_id = owner_id + '_' + post_id;
+      var view=function(data){
+         if(!data){
+            vkAlertBox(IDL('Error'),'poll data: <br>'+[owner_id, poll_id, post_id].join('<br>'));
+            return;
+         }
+         var answer=data.answers; //answer[i].rate=12.9; answer[i].text="...."; answer[i].votes=150
+         var max=0;
+         for (var i=0; i<answer.length; i++){
+            max=Math.max(max,answer[i].rate);
+         }
+
+         var html="";
+         for (var i=0; i<answer.length; i++){
+            var width=Math.round(answer[i].rate*100/max);
+            html+=tpl.replace(/%RATE/g,answer[i].rate)
+                     .replace(/%TEXT/g,answer[i].text)
+                     .replace(/%FULL_POST_ID/g,full_post_id)
+                     .replace(/%ANSWER_ID/g,answer[i].id)
+                     .replace(/%WIDTH/g,width)
+                     .replace(/%COUNT/g,answer[i].votes);
+         }
+         html='<div class="page_media_poll">'+html+'</div>';
+
+         html='\
+         <div class="page_media_poll_title_wrap clear_fix">\
+            <div class="page_media_poll_title">'+data.question+'</div>\
+            '+html+'\
+         </div>';
+
+         vkAlertBox(IDL('ViewResults'),html);
+         vkopt.wall.poll_voters(data.owner_id,data.id);
+      };
+
+
+      var code = 'return {posts: API.wall.getById({posts:"'+full_post_id+'", copy_history_depth: 2}), poll: API.polls.getById({owner_id:'+owner_id+',poll_id:'+poll_id+'})};'
+      if (!post_id && owner_id && poll_id){
+         dApi.call('polls.getById',{owner_id:owner_id, poll_id:poll_id, v: '5.59'},function(r){
+            var data=r.response;
+            view(data);
+         });
+      } else {
+         dApi.call('execute',{code:code, v: '5.59'},function(r){
+         var post = ((r.response || {}).posts || [])[0] || {};
+            var scan = function(list){
+               if (!list)
+                  return null;
+               for (var i = 0; i < list.length; i++)
+                  if (list[i].type == 'poll' && list[i].poll.id == poll_id)
+                     return list[i].poll;
+               return null;
+            }
+            var poll = scan(post.attachments);
+            if (!poll && post.copy_history)
+               for (var i = 0; i < post.copy_history.length; i++){
+                  poll = scan(post.copy_history[i].attachments);
+                  if (poll)
+                     break;
+               }
+            vkopt.log(poll);
+            view(poll);
+         });
+      }
+      return false;
+   },
+   poll_voters: function(oid,poll_id){
+      var code='\
+        var oid='+oid+';\
+        var poll_id='+poll_id+';\
+        var poll=API.polls.getById({owner_id:oid,poll_id:poll_id});\
+        var voters=API.polls.getVoters({owner_id:oid,poll_id:poll_id,answer_ids:poll.answers@.id,fields:"first_name,last_name,online,photo_rec",offset:0,count:9});\
+        return {poll:poll,voters:voters,anwers_ids:poll.answers@.id};\
+      ';
+      dApi.call('execute',{code:code, v: '5.59'},function(r){
+            var data=r.response;
+            if (vk_DEBUG) console.log(data);
+            if (data.voters){
+               stManager.add('wk.css');
+               var voters=data.voters;
+               for (var j=0; j<voters.length; j++){
+                  var el=ge('vk_poll_usrs'+voters[j].answer_id);
+                  var users=voters[j].users;
+                  var html='';
+                  for (var i=0; i<users.length; i++){
+                     if (!users[i].uid) continue;
+                     html+='<a class="wk_poll_usr inl_bl" title="'+users[i].first_name+' '+users[i].last_name+'" href="/id'+users[i].uid+'"><img class="wk_poll_usr_photo" src="'+users[i].photo_rec+'" width="30" height="30"></a>';
+                  }
+                  val(el, html);
+               }
+            }
+      });
+      // ge('vk_poll_usrs'+voters[i].answer_id)
    }
 
 };
@@ -5841,6 +6333,140 @@ vkopt['test_module'] =  {
    },
    //*/
 };
+
+vkopt['turn_blocks'] = {
+   onSettings:{
+      vkInterface:{
+         turn_blocks:{
+            title: 'seShutProfilesBlock',
+            class_toggler: true
+         }
+      }
+   },
+   css: function() {
+      vkopt.turn_blocks.arrset = vkopt.settings.get('turn_blocks_arr') || [];
+      var code = vkopt.turn_blocks.getShutCss();
+      vkopt.set_css(code, 'vk_closed_blocks_temp');
+
+      return vk_lib.get_block_comments(function() {
+            /*css:
+            .vk_turn_blocks .module_header .header_top{
+                padding-right: 0px;
+            }
+            .vk_turn_blocks .shut_block .module_header .header_top{
+                padding-top: 0px;
+                height: 40px;
+            }
+            .vk_turn_blocks .shut_icon_wrap{
+                padding-right: 10px;
+                height: 40px;
+            }
+            .vk_turn_blocks .shut_icon{
+                background: url(/images/icons/menu_arrow.png) no-repeat 50% 50%;
+                width: 10px;
+                height: 40px;
+                margin-left: -6px;
+                -webkit-transform: rotate(180deg);
+                transform: rotate(180deg);
+            }
+            .vk_turn_blocks .shut_block .shut_icon{
+                -webkit-transform: rotate(0deg);
+                transform: rotate(0deg);
+            }
+            .vk_turn_blocks .shut_block .module_body,
+            .vk_turn_blocks .shut_block .page_photos_module {
+               display:none;
+            }
+            */
+         }).css;
+   },
+   addIcons: function() {
+      vkopt.turn_blocks.arrset = vkopt.settings.get('turn_blocks_arr') || [];
+      vkopt.set_css('','vk_turn_blocks_state');
+      var code = vkopt.turn_blocks.getShutCss();
+      vkopt.set_css(code, 'vk_closed_blocks_temp');
+
+      var blocks = geByClass('header_top clear_fix');
+      for (i = 0; i < blocks.length; i++) {
+         if (!geByClass1('shut_icon',blocks[i])) {
+            var icon = document.createElement('div');
+            icon.className = 'shut_icon';
+            var btn = document.createElement('a');
+            btn.className = 'fl_l shut_icon_wrap';
+            btn.id = blocks[i].parentNode.parentNode.id+'_i';
+            btn.href = '#';
+            btn.onclick = function(e) {
+               e.preventDefault(); //не открываем ссылку блока
+               e.stopPropagation(); //не открываем окно блока
+               vkopt.turn_blocks.turnBlock(this);
+            };
+            btn.appendChild(icon);
+            blocks[i].insertBefore(btn, blocks[i].firstChild);
+         }
+      }
+      //сворачиваем те, которые были сохранены
+      var len = vkopt.turn_blocks.arrset.length;
+      for (var i = 0; i < len; i++) {
+         var icon = ge(vkopt.turn_blocks.arrset[i]+'_i');
+         if (icon !== null) {
+            var block = icon.parentNode.parentNode.parentNode;
+            addClass(block, 'shut_block');
+         }
+      }
+   },
+   delIcons: function() { //отключение
+      vkopt.set_css('.shut_icon{display:none}','vk_turn_blocks_state');
+      vkopt.set_css('', 'vk_closed_blocks_temp');
+   },
+   turnBlock: function(icon) {
+      var block = icon.parentNode.parentNode.parentNode;
+      var blockname = icon.parentNode;
+      var arrset = vkopt.turn_blocks.arrset;
+
+      if (hasClass(block, 'shut_block')) {
+         var index = arrset.indexOf(block.id);
+         if (index > -1) arrset.splice(index, 1);
+         removeClass(block, 'shut_block');
+      } else {
+         arrset.push(block.id);
+         addClass(block, 'shut_block');
+      }
+      var code = vkopt.turn_blocks.getShutCss();
+      vkopt.set_css(code, 'vk_closed_blocks_temp');
+      vkopt.settings.set('turn_blocks_arr', arrset);
+   },
+   getShutCss: function() {
+      if (vkopt.turn_blocks.arrset.length<1) return '';
+      var selectors = [];
+      for (var i in vkopt.turn_blocks.arrset) {
+         if (vkopt.turn_blocks.arrset[i] == 'profile_photos_module')
+            selectors.push('#profile_photos_module .page_photos_module'); //костыль
+         else selectors.push('#' + vkopt.turn_blocks.arrset[i] + ' .module_body');
+      }
+      var code = selectors.join(',\n') + '{ display: none }';
+      return code;
+   },
+   reset: function() {
+      vkopt.settings.set('turn_blocks_arr', []);
+   },
+   onLocation: function() {
+      if (vkopt.settings.get('turn_blocks')) {
+         clearTimeout(vkopt.turn_blocks.delay);
+         vkopt.turn_blocks.delay = setTimeout(function() {
+            vkopt.turn_blocks.addIcons();
+         }, 200);
+      }
+   },
+   onOptionChanged: function(option_id, val, option_data){
+      if (option_id == 'turn_blocks') {
+         clearTimeout(vkopt.turn_blocks.delay);
+         vkopt.turn_blocks.delay = setTimeout(function() {
+            if (val) vkopt.turn_blocks.addIcons();
+            else vkopt.turn_blocks.delIcons();
+         }, 200);
+      }
+   }
+}
 
 
 vkopt_core.init();
